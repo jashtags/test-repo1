@@ -1,0 +1,19 @@
+# API keys — never commit
+.env
+
+# Vector database (large, regenerated on ingest)
+chroma_db/
+
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.Python
+
+# macOS
+.DS_Store
+
+# Temp files
+*.tmp
+/tmp/
