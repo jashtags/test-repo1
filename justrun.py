@@ -182,17 +182,18 @@ def ensure_ollama_model() -> None:
 def launch_app() -> None:
     step("Launching app")
 
-    streamlit = shutil.which("streamlit")
-    if not streamlit:
-        die(
-            "streamlit command not found after install. "
-            "Try: pip install streamlit, then re-run."
-        )
-
     print("  Opening browser at http://localhost:8501")
     print("  Press Ctrl+C to stop the server.\n")
 
-    subprocess.run([streamlit, "run", "app.py"])
+    # Prefer the streamlit binary; fall back to `python3 -m streamlit` when the
+    # binary isn't on PATH (common with pip3 user installs on macOS).
+    streamlit_bin = shutil.which("streamlit")
+    if streamlit_bin:
+        cmd = [streamlit_bin, "run", "app.py"]
+    else:
+        cmd = [sys.executable, "-m", "streamlit", "run", "app.py"]
+
+    subprocess.run(cmd)
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
