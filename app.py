@@ -16,9 +16,13 @@ st.set_page_config(
 if "vectorstore" not in st.session_state:
     st.session_state.vectorstore = None
 if "ingested_docs" not in st.session_state:
-    st.session_state.ingested_docs = []  # filenames
+    st.session_state.ingested_docs = []
 if "all_docs" not in st.session_state:
-    st.session_state.all_docs = []  # LangChain Document objects (post-split)
+    st.session_state.all_docs = []
+# Per-level: {response, judge (parsed dict), improved}
+for _lvl in range(1, 5):
+    if f"level_{_lvl}" not in st.session_state:
+        st.session_state[f"level_{_lvl}"] = {}
 
 # ─── Sidebar ─────────────────────────────────────────────────────────────────
 with st.sidebar:
@@ -39,7 +43,6 @@ with st.sidebar:
         for name in st.session_state.ingested_docs:
             st.write(f"• {name}")
 
-    # Try loading existing vectorstore on first run
     if st.session_state.vectorstore is None:
         try:
             from vectorstore import load_vectorstore
@@ -52,10 +55,10 @@ with st.sidebar:
 
 # ─── Header ──────────────────────────────────────────────────────────────────
 st.title("📚 PDF Intelligence Platform")
-st.caption("LlamaParse · ChromaDB · LangChain · Llama 3.2 via Ollama")
+st.caption("LlamaParse · ChromaDB · LangChain · Llama 3.2 via Ollama · Judge AI")
 
-tab_ingest, tab_query, tab_brief, tab_guard = st.tabs(
-    ["📥 Ingest Documents", "🔍 Query", "📊 Executive Brief", "🛡️ Guardrails"]
+tab_ingest, tab_query, tab_learn, tab_guard = st.tabs(
+    ["📥 Ingest Documents", "🔍 Query", "📚 Learning Levels", "🛡️ Guardrails"]
 )
 
 # ─── Tab 1: Ingest ───────────────────────────────────────────────────────────
@@ -193,70 +196,180 @@ with tab_query:
                     st.text(doc.page_content[:300])
                     st.divider()
 
-# ─── Tab 3: Executive Brief ──────────────────────────────────────────────────
-with tab_brief:
-    st.header("Executive Business Brief")
+# ─── Tab 3: Learning Levels ──────────────────────────────────────────────────
+with tab_learn:
+    from chains import LEVEL_CONFIGS
+
+    st.header("Progressive Learning Levels")
     st.write(
-        "Generate a structured, CSO-level strategic brief including a Risk/Opportunity "
-        "Matrix and quarterly Implementation Roadmap — grounded in your documents."
+        "Get 4 progressively deeper explanations of your document — each one building on "
+        "the last. A judge LLM automatically evaluates every response and triggers an "
+        "improvement pass when quality falls below 7/10."
     )
+
+    # Level overview cards
+    cols = st.columns(4)
+    for i, col in enumerate(cols, start=1):
+        cfg = LEVEL_CONFIGS[i]
+        col.metric(
+            label=f"{cfg['icon']} Level {i}",
+            value=cfg["name"],
+            delta=cfg["description"],
+            delta_color="off",
+        )
+
+    st.divider()
 
     if st.session_state.vectorstore is None:
         st.info("No documents ingested yet. Use the Ingest tab first.")
     else:
-        topic = st.text_input(
-            "Strategic topic or question",
-            placeholder="What is the competitive landscape for transformer-based LLMs in enterprise?",
+        topic_focus = st.text_input(
+            "Focus topic (optional)",
+            placeholder="e.g. 'attention mechanism' — leave blank to cover the full document",
+            key="level_topic",
         )
 
-        col_aud, col_depth = st.columns(2)
-        with col_aud:
-            audience = st.selectbox(
-                "Executive Audience",
-                ["C-Suite / Board", "Chief Strategy Officer", "Chief Technology Officer", "Product Leadership"],
-            )
-        with col_depth:
-            depth = st.selectbox(
-                "Brief Depth",
-                ["High-level Overview", "Detailed Analysis", "Comprehensive Strategic Plan"],
-            )
+        lev_tabs = st.tabs(
+            [f"{LEVEL_CONFIGS[i]['icon']} Level {i} — {LEVEL_CONFIGS[i]['name']}" for i in range(1, 5)]
+        )
 
-        if st.button("Generate Executive Brief", type="primary") and topic:
-            from chains import get_llm, build_executive_summary_chain
-            from guardrails import rewrite_jargon
+        for level, lev_tab in enumerate(lev_tabs, start=1):
+            with lev_tab:
+                cfg = LEVEL_CONFIGS[level]
+                st.subheader(f"Level {level}: {cfg['name']}")
+                st.caption(cfg["description"])
 
-            with st.spinner("Retrieving strategic context…"):
-                retriever = st.session_state.vectorstore.as_retriever(
-                    search_kwargs={"k": 6}
+                state_key = f"level_{level}"
+                data = st.session_state[state_key]
+
+                # ── Display stored results (from previous generation) ──────────
+                if data.get("response"):
+                    display_text = data.get("improved") or data["response"]
+                    st.markdown(display_text)
+
+                    if data.get("judge"):
+                        judge = data["judge"]
+                        score = judge.get("score", 0)
+                        verdict = judge.get("verdict", "UNKNOWN")
+                        score_icon = "🟢" if score >= 8 else "🟡" if score >= 6 else "🔴"
+
+                        with st.expander(
+                            f"🧑‍⚖️ Judge Evaluation — {score_icon} {score}/10 ({verdict})"
+                        ):
+                            col_a, col_b = st.columns(2)
+                            with col_a:
+                                st.metric("Score", f"{score}/10")
+                                st.write(f"**Accuracy:** {judge.get('accuracy', '—')}")
+                                st.write(f"**Depth Fit:** {judge.get('depth_fit', '—')}")
+                            with col_b:
+                                st.write(f"**Clarity:** {judge.get('clarity', '—')}")
+                                st.write(f"**Missing:** {judge.get('missing', '—')}")
+                            st.info(f"**Feedback:** {judge.get('feedback', '—')}")
+
+                    if data.get("improved"):
+                        st.success("✨ Response was automatically improved by judge feedback.")
+
+                    st.divider()
+
+                # ── Generate / Regenerate button ─────────────────────────────
+                btn_label = (
+                    f"Regenerate Level {level}"
+                    if data.get("response")
+                    else f"Generate Level {level}"
                 )
-                context_docs = retriever.invoke(topic)
-                context_text = "\n\n---\n\n".join(
-                    f"[Source: {d.metadata.get('source', 'doc')}]\n{d.page_content}"
-                    for d in context_docs
-                )
+                if st.button(btn_label, key=f"btn_level_{level}", type="primary"):
+                    from chains import (
+                        get_llm, get_judge_llm,
+                        build_level_chain, build_judge_chain, parse_judge_output,
+                    )
 
-            st.subheader("Strategic Executive Brief")
-            llm = get_llm(anthropic_key)
-            chain = build_executive_summary_chain(llm)
+                    st.session_state[state_key] = {}  # clear old results
 
-            brief_placeholder = st.empty()
-            full_brief = ""
-            for chunk in chain.stream(
-                {"topic": topic, "context": context_text, "audience": audience, "depth": depth}
-            ):
-                full_brief += chunk
-                brief_placeholder.markdown(full_brief)
+                    # Retrieve document context
+                    with st.spinner("Retrieving document context…"):
+                        retriever = st.session_state.vectorstore.as_retriever(
+                            search_kwargs={"k": 6}
+                        )
+                        query_text = topic_focus if topic_focus else "main topic and key concepts"
+                        context_docs = retriever.invoke(query_text)
+                        context_text = "\n\n---\n\n".join(
+                            f"[Source: {d.metadata.get('source', 'doc')}]\n{d.page_content}"
+                            for d in context_docs
+                        )
 
-            cleaned_brief, changes = rewrite_jargon(full_brief)
-            if changes:
-                st.divider()
-                with st.expander(
-                    f"🛡️ Jargon Guard — {len(changes)} strategic term(s) normalized"
-                ):
-                    for c in changes:
-                        st.write(f"• `{c['original']}` → **{c['replacement']}**")
-                    st.markdown("**Normalized Brief:**")
-                    st.markdown(cleaned_brief)
+                    llm = get_llm()
+                    judge_llm = get_judge_llm()
+
+                    # ── Stream the level response ─────────────────────────────
+                    st.subheader(f"Level {level} Response")
+                    resp_placeholder = st.empty()
+                    full_response = ""
+                    level_chain = build_level_chain(level, llm)
+                    for chunk in level_chain.stream({
+                        "context": context_text,
+                        "topic": topic_focus or "the main topic of this document",
+                    }):
+                        full_response += chunk
+                        resp_placeholder.markdown(full_response)
+
+                    st.session_state[state_key]["response"] = full_response
+
+                    # ── Judge evaluation ──────────────────────────────────────
+                    with st.spinner("🧑‍⚖️ Judge evaluating response quality…"):
+                        judge_chain = build_judge_chain(judge_llm)
+                        judge_raw = judge_chain.invoke({
+                            "level": level,
+                            "level_name": cfg["name"],
+                            "level_description": cfg["description"],
+                            "criteria": cfg["judge_criteria"],
+                            "response": full_response,
+                            "context": context_text,
+                        })
+                        parsed_judge = parse_judge_output(judge_raw)
+
+                    st.session_state[state_key]["judge"] = parsed_judge
+
+                    score = parsed_judge.get("score", 0)
+                    verdict = parsed_judge.get("verdict", "FAIL")
+                    score_icon = "🟢" if score >= 8 else "🟡" if score >= 6 else "🔴"
+
+                    with st.expander(
+                        f"🧑‍⚖️ Judge Evaluation — {score_icon} {score}/10 ({verdict})"
+                    ):
+                        col_a, col_b = st.columns(2)
+                        with col_a:
+                            st.metric("Score", f"{score}/10")
+                            st.write(f"**Accuracy:** {parsed_judge.get('accuracy', '—')}")
+                            st.write(f"**Depth Fit:** {parsed_judge.get('depth_fit', '—')}")
+                        with col_b:
+                            st.write(f"**Clarity:** {parsed_judge.get('clarity', '—')}")
+                            st.write(f"**Missing:** {parsed_judge.get('missing', '—')}")
+                        st.info(f"**Feedback:** {parsed_judge.get('feedback', '—')}")
+
+                    # ── Auto-improve if score < 7 ─────────────────────────────
+                    if verdict == "FAIL":
+                        st.warning(
+                            f"Score {score}/10 is below threshold — generating improved response…"
+                        )
+                        improved_chain = build_level_chain(
+                            level, llm,
+                            feedback=parsed_judge.get("feedback", ""),
+                        )
+                        st.subheader("✨ Improved Response")
+                        imp_placeholder = st.empty()
+                        improved_response = ""
+                        for chunk in improved_chain.stream({
+                            "context": context_text,
+                            "topic": topic_focus or "the main topic of this document",
+                        }):
+                            improved_response += chunk
+                            imp_placeholder.markdown(improved_response)
+
+                        st.session_state[state_key]["improved"] = improved_response
+                    else:
+                        st.success(f"✅ Score {score}/10 — Response passed quality check.")
+
+                    st.rerun()
 
 # ─── Tab 4: Guardrails ───────────────────────────────────────────────────────
 with tab_guard:
